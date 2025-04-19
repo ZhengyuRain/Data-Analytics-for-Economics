@@ -1,0 +1,167 @@
+
+
+
+* setup_sumstats1.do
+* Generates date vars, removes bookkeeping transactions, merges store zones
+
+*log using $logdir/$currentcity/setup_sumstats1, text replace
+
+do var_sea
+
+clear
+cd $statadir
+
+
+use $bigdatadir/$transactions
+
+compress
+
+
+******** CREATE TRANSACTION_STORE ID
+sort store
+
+merge store using $datadir/working/storezones
+tab _merge
+drop if _merge~=3
+drop _merge
+
+* Keep specific city
+keep if zone==$currentzone
+
+sort prod_num zone
+merge prod_num zone using $datadir/working/calories_sparse
+tab _merge
+drop if _merge==2
+drop _merge
+
+
+
+*ge dat=date(txdate,"dmy")
+ge dat=txdate
+ge txdow=dow(dat)
+ge txmonth=month(dat)
+ge txday=day(dat)
+ge txweek=week(dat)
+ge txyear=year(dat)
+
+* Balance Panel
+drop if txyear==2008 & txmonth==1 & txday<=5
+* already ends on a Saterday, Feb 2009
+
+* Change week variable to count full weeks beginning on Sunday:
+
+* 2008 begins on a Tuesday
+replace txweek=txweek+1 if txdow==0 & txyear==2008
+replace txweek=txweek+1 if txdow==1 & txyear==2008
+replace txweek=txweek-1 if txyear==2009
+
+
+* 2009 begins on a Thursday
+replace txweek=txweek+1 if txdow==0 & txyear==2009
+replace txweek=txweek+1 if txdow==1 & txyear==2009
+replace txweek=txweek+1 if txdow==2 & txyear==2009
+replace txweek=txweek+1 if txdow==3 & txyear==2009
+replace txweek=txweek-1
+
+ge temp=txweek
+replace temp=0 if txyear==2009
+egen temp2=max(temp)
+replace txweek=temp2+txweek-1 if txyear==2009
+
+drop temp temp2
+
+*********** Label Date Vars ************
+
+label define monthlabel 1 "Jan" 2 "Feb" 3 "Mar" 4 "Apr" 5 "May" 6 "Jun" 7 "Jul" 8 "Aug" 9 "Sep" 10 "Oct" 11 "Nov" 12 "Dec"
+label values txmonth monthlabel
+label var txmonth "Month"
+
+label define dowlabel 0 "Sun" 1 "Mon" 2 "Tue" 3 "Wed" 4 "Thu" 5 "Fri" 6 "Sat"
+label values txdow dowlabel
+label var txdow "Day of the Week"
+
+label var txweek "Week Number"
+
+label var txyear "Year"
+
+* Drop if end of day transaction estimate
+drop if prod_num>=999000000
+* drop returns
+* drop if negative price
+drop if nds_amt<0
+
+
+************************************************************
+
+*drop stores that are not in complete time period
+drop if parttime==1
+
+************************************************************
+
+* Define different transaction indicator
+
+sort store txyear txmonth txday txid txline
+ge diff_tx=(store~=store[_n-1]|txyear~=txyear[_n-1]|txmonth~=txmonth[_n-1]|txday~=txday[_n-1]|txid~=txid[_n-1])
+
+su diff_tx txline
+count if diff_tx==1 & txline~=1
+count if txline==1 & diff_tx==0
+
+**************** Type: ********************
+* (1 drink, 2 food, 3 extra, 4 packaged drink, 5 meal, 0 other)
+replace type=0 if type==.
+
+* Label type variable
+
+label define typelabel 1 "Drink" 2 "Snack" 3 "Extra" 4 "Bottled Drink" 5 "Meal" 0 "Other"
+label values type typelabel
+label var type "Item Type"
+
+sort store txyear txmonth txday txid txline
+bysort store txyear txmonth txday txid: egen txhasdrink = max(type==1)
+bysort store txyear txmonth txday txid: egen txhassnack = max(type==2)
+bysort store txyear txmonth txday txid: egen txhasmeal = max(type==5)
+ge txhasfood=max(txhassnack,txhasmeal)
+bysort store txyear txmonth txday txid: egen txhasextra = max(type==3)
+bysort store txyear txmonth txday txid: egen txhaspkgdrink = max(type==4)
+bysort store txyear txmonth txday txid: egen txhasother = max(type==0)
+
+label var txhasdrink "Transaction has a Drink"
+label var txhassnack "Transaction has a Snack"
+label var txhasmeal "Transaction has a Meal Item"
+label var txhasfood "Transaction has a Food Item"
+label var txhasextra "Transaction has an Extra"
+label var txhaspkgdrink "Transaction has a Packaged Drink"
+label var txhasother "Transaction has a Non-Consumable Item"
+
+bysort store txyear txmonth txday txid: egen txnumdrink = total((type==1)*nds_qty)
+bysort store txyear txmonth txday txid: egen txnumsnack = total((type==2)*nds_qty)
+bysort store txyear txmonth txday txid: egen txnummeal = total((type==5)*nds_qty)
+bysort store txyear txmonth txday txid: egen txnumextra = total((type==3)*nds_qty)
+bysort store txyear txmonth txday txid: egen txnumpkgdrink = total((type==4)*nds_qty)
+bysort store txyear txmonth txday txid: egen txnumother = total((type==0)*nds_qty)
+
+label var txnumdrink "Number of Drinks"
+label var txnumsnack "Number of Snacks"
+label var txnummeal "Number of Meal Items"
+label var txnumextra "Number of Extras"
+label var txnumpkgdrink "Number of Packaged Drinks"
+label var txnumother "Number of Non-Consumable Items"
+
+ge multiplepeople= txnumdrink+txnumpkgdrink>=2 | txnummeal+txnumsnack>2
+su multiplepeople
+label var multiplepeople "Transaction is for Multiple People"
+
+********* Generate after varible for policy change ********
+
+ge after_nyc=(dat>mdy($postingdate_nyc))
+ge after_sea=(dat>mdy($postingdate_sea))
+
+****************** Save file ******************* 
+
+compress
+
+
+save $bigdatadir/working/$currentcity/setup_sumstats1, replace
+
+log close
